@@ -745,19 +745,19 @@ def run_webhook() -> None:
     bot, dispatcher = build_bot()
     webhook_url = f"{config.WEBHOOK_BASE}{config.WEBHOOK_PATH}"
 
-    async def on_startup(startup_bot: Bot) -> None:
+    async def on_startup(dispatcher: Dispatcher) -> None:
         await db.init_db()
         # Не дропаем pending: если Free-сервис Render спал, Telegram
         # успел накопить сообщения — они должны дойти после просыпания.
-        await startup_bot.set_webhook(
+        await bot.set_webhook(
             webhook_url,
             secret_token=config.WEBHOOK_SECRET,
             drop_pending_updates=False,
         )
         print(f"✅ Webhook: {webhook_url}", flush=True)
 
-    async def on_shutdown(shutdown_bot: Bot) -> None:
-        await shutdown_bot.session.close()
+    async def on_shutdown(dispatcher: Dispatcher) -> None:
+        await bot.session.close()
 
     dispatcher.startup.register(on_startup)
     dispatcher.shutdown.register(on_shutdown)
