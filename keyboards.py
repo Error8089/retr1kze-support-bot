@@ -2,7 +2,7 @@
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from config import SERVICES, service_title
+from config import SERVICES, service_title, get_my_commands, is_admin, is_operator
 
 
 def services_kb() -> InlineKeyboardMarkup:
@@ -93,7 +93,7 @@ def history_kb(chat_id: int, is_active: bool = False) -> InlineKeyboardMarkup:
     if not is_active:
         builder.button(text="✉️ Продолжить", callback_data=f"reopen:{chat_id}")
     builder.button(text="🆕 Новый заказ", callback_data="client:services")
-    builder.button(text="🔙 Мои заказы", callback_data="client:chats")
+    builder.button(text="📁 Мои заказы", callback_data="client:chats")
     builder.adjust(2, 1) if not is_active else builder.adjust(2)
     return builder.as_markup()
 

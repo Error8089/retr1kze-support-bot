@@ -96,3 +96,24 @@ def operator_name(operator_id: int) -> str:
     if is_admin(operator_id):
         return "👑 ты (админ)"
     return f"🧑‍💻 {operator_id}"
+
+
+# Команды бота, которые появляются при вводе /
+MY_COMMANDS = [
+    ("start", "🔙 Начало / Выбор услуги"),
+    ("help", "ℹ️ Помощь и инструкция"),
+    ("mychats", "📁 Мои заказы — история диалогов"),
+    ("admin", "👑 Админ-панель (только для владельца)"),
+    ("id", "🆔 Узнать свой Telegram ID"),
+]
+
+
+def get_my_commands(user_id: int) -> list:
+    """Возвращает список команд, доступных пользователю."""
+    base = [("/start", "🔙 Начало / Выбор услуги")]
+    if config.is_admin(user_id):
+        base += [("/admin", "👑 Админ-панель"), ("/id", "🆔 Мой ID")]
+    if config.is_operator(user_id) and not config.is_admin(user_id):
+        base += [("/mychats", "📁 Мои заказы")]
+    base += [("/help", "ℹ️ Помощь")]
+    return base

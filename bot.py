@@ -1,8 +1,10 @@
 """Telegram-бот для работы с клиентами: анонимный чат, услуги, админ-панель."""
 import asyncio
+import json
 import re
 
 from aiohttp import web
+
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -29,17 +31,51 @@ from keyboards import (
     spec_review_kb,
 )
 
+# Словарь команд для разных ролей
+COMMANDS_BY_ROLE = {
+    "admin": [
+        ("admin", "👑 Админ-панель"),
+        ("/id", "🆔 Мой ID"),
+        ("/start", "🔙 Начало"),
+        ("/help", "ℹ️ Помощь"),
+    ],
+    "operator": [
+        ("/mychats", "📁 Мои заказы"),
+        ("/start", "🔙 Начало"),
+        ("/help", "ℹ️ Помощь"),
+    ],
+    "client": [
+        ("/mychats", "📁 Мои заказы"),
+        ("/start", "🔙 Начало"),
+        ("/help", "ℹ️ Помощь"),
+    ],
+}
+
+
 router = Router()
+
+
+async def set_bot_commands(user_id: int, bot: Bot) -> None:
+    """Устанавливает команды, которые появляются при вводе /."""
+    role = config.role_for(user_id)
+    commands = COMMANDS_BY_ROLE.get(role, COMMANDS_BY_ROLE["client"])
+    try:
+        await bot.set_my_commands(
+            commands,
+            language_code="en",
+        )
+    except Exception:
+        pass  # Не критично
 
 
 # ---------------------------------------------------------------- utils
 def esc(value) -> str:
-    """Экранируем только &, <, > — Telegram не любит числовые entity вроде &#x27;."""
+    """Экранируем только &, <, > — Telegram не любит числовые entity вроде '."""
     return (
         str(value)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
+        .replace("&", "&")
+        .replace("<", "<")
+        .replace(">", ">")
     )
 
 
@@ -146,6 +182,27 @@ def replied_chat_id(message: Message) -> int | None:
 
 
 # ---------------------------------------------------------------- panels
+
+async def show_services(target: Message, client_id: int) -> None:
+    active = await db.get_active_chat_for_client(client_id)
+    if active:
+        text = (
+            f"👋 У тебя активный заказ #{active['id']}.\n"
+            "Просто напиши сообщение или ответь на сообщение специалиста — "
+            "оно уйдёт в этот же чат.\n\n"
+            "ВсеPrevious заказы и переписка — в разделе «📁 Мои заказы»."
+        ).replace("Previous", "прошлые")
+        await target.answer(text, reply_markup=client_kb(active["id"]))
+        return
+    await target.answer(
+        "👋 Привет! Я бот студии retr1kze.\n\n"
+        "Выбери услугу — и я анонимно свяжу тебя со специалистом. "
+        "Твой Telegram не будет виден.\n\n"
+        "Раньше писал нам? Открой «📁 Мои заказы» — там вся история переписки.",
+        reply_markup=services_kb(),
+    )
+
+
 async def show_admin_panel(target: Message, edit: bool = False) -> None:
     text = (
         "👑 <b>Админ-панель</b>\n\n"
@@ -174,22 +231,45 @@ async def show_operator_panel(target: Message, edit: bool = False,
         await target.answer(text, reply_markup=markup)
 
 
-async def show_services(target: Message, client_id: int) -> None:
-    active = await db.get_active_chat_for_client(client_id)
-    if active:
-        await target.answer(
-            f"👋 У тебя активный заказ #{active['id']}.\n"
-            "Просто напиши сообщение — оно уйдёт в этот же чат.\n\n"
-            "Все прошлые заказы и переписка — в разделе «📁 Мои заказы».",
-            reply_markup=client_kb(active["id"]),
-        )
+async def show_my_chats(target: Message, user_id: int) -> None:
+    """Показать список заказов клиента."""
+    chats = await db.get_client_chats(user_id)
+    text = "📁 <b>Твои заказы</b>\n"
+    if not chats:
+        text += "Пока заказов нет."
+    else:
+        for chat in chats:
+            mark = "🟢" if chat["status"] == "active" else "✅"
+            text += (
+                f"\n{mark} #{chat['id']} · "
+                f"{esc(config.service_title(chat['service_key']))} · "
+                f"{fmt_date(chat['created_at'])}"
+            )
+    await target.answer(text, reply_markup=my_chats_kb(chats))
+
+
+async def show_history(target: Message, chat_id: int, user_id: int) -> None:
+    """Показать историю конкретного чата."""
+    chat = await db.get_chat(chat_id)
+    if not chat or chat["client_id"] != user_id:
+        await target.answer("Заказ не найден", show_alert=True)
         return
+
+    messages = await db.get_chat_messages(chat_id)
+    lines = [
+        f"📄 <b>Заказ #{chat_id}</b> · {config.service_title(chat['service_key'])} · "
+        f"{chat['status']} · {fmt_date(chat['created_at'])}\n"
+    ]
+    for item in messages:
+        who = "Ты" if item["sender_id"] == user_id else "Специалист"
+        body = esc(item["body"] or "")
+        if len(body) > 300:
+            body = body[:297] + "…"
+        lines.append(f"{who}: {body}")
+    is_active = chat["status"] == "active"
     await target.answer(
-        "👋 Привет! Я бот студии retr1kze.\n\n"
-        "Выбери услугу — и я анонимно свяжу тебя со специалистом. "
-        "Твой Telegram не будет виден.\n\n"
-        "Раньше писал нам? Открой «📁 Мои заказы» —там вся история переписки.",
-        reply_markup=services_kb(),
+        "\n".join(lines),
+        reply_markup=history_kb(chat_id, is_active),
     )
 
 
@@ -201,12 +281,73 @@ async def cmd_start(message: Message):
     await db.register_user(user.id, user.username, user.full_name, role)
     await db.log("start", user.id)
 
+    # Устанавливаем команды бота, чтобы они появлялись при вводе /
+    try:
+        commands = []
+        if config.is_admin(user.id):
+            commands.extend([("admin", "👑 Админ-панель"), ("/id", "🆔 Мой ID")])
+        if config.is_operator(user.id) and not config.is_admin(user.id):
+            commands.append(("/mychats", "📁 Мои заказы"))
+        commands.extend([("/start", "🔙 Начало"), ("/help", "ℹ️ Помощь")])
+        await Bot(config.BOT_TOKEN).set_my_commands(
+            commands,
+            language_code=user.language_code or "en",
+        )
+    except Exception:
+        pass  # Не критично, если не получится установить команды
+
     if role == "admin":
         await show_admin_panel(message)
     elif role == "operator":
         await show_operator_panel(message)
     else:
         await show_services(message, user.id)
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    user = message.from_user
+    role = config.role_for(user.id)
+    if role == "admin":
+        text = (
+            "ℹ️ <b>Инструкция для админа</b>\n\n"
+            "• Клиент заходит по ссылке на бота, жмёт /start и выбирает услугу.\n"
+            "• Бот назначает специалиста по услуге и открывает анонимный чат.\n"
+            "• Специалист отвечает кнопкой «Ответить».\n"
+            "• Друзья получают доступ только к своим чатам.\n"
+            "• Админ-панель доступна только тебе.\n\n"
+            "Чтобы добавить друга: узнай его ID командой /id и укажи в SERVICES_JSON.\n\n"
+            "Команды при вводе /:\n"
+        )
+        for cmd, desc in config.get_my_commands(user.id):
+            text += f"• {cmd} — {desc}\n"
+        await message.answer(text, parse_mode="HTML")
+    elif role == "operator":
+        text = (
+            "ℹ️ <b>Инструкция для специалиста</b>\n\n"
+            "1. В чате с ботом придёт уведомление о новом клиенте.\n"
+            "2. Нажми «Ответить» и напиши сообщение.\n"
+            "3. Клиент получит его анонимно.\n"
+            "4. «Завершить» — закрыть диалог.\n\n"
+            "Ты видишь только клиентов своих услуг. Админ видит всё.\n\n"
+            "Команды при вводе /:\n"
+        )
+        for cmd, desc in config.get_my_commands(user.id):
+            text += f"• {cmd} — {desc}\n"
+        await message.answer(text, parse_mode="HTML")
+    else:
+        text = (
+            "ℹ️ <b>Инструкция для клиента</b>\n\n"
+            "1. Нажми /start и выбери услугу.\n"
+            "2. Бот свяжет тебя со специалистом анонимно.\n"
+            "3. Пиши сообщения — специалист получит их.\n"
+            "4. Чтобы вернуться к диалогу: используй команду /mychats\n"
+            "5. Чтобы завершить чат: нажми «🔚 Завершить»\n\n"
+            "Команды при вводе /:\n"
+        )
+        for cmd, desc in config.get_my_commands(user.id):
+            text += f"• {cmd} — {desc}\n"
+        await message.answer(text, parse_mode="HTML")
 
 
 @router.message(Command("id"))
@@ -221,6 +362,16 @@ async def cmd_id(message: Message):
         f"Роль: <b>{role}</b>\n\n"
         "Отправь этот ID администратору, чтобы тебя добавили как специалиста."
     )
+
+
+@router.message(Command("mychats"))
+async def cmd_mychats(message: Message):
+    user = message.from_user
+    role = config.role_for(user.id)
+    if role != "client":
+        await message.answer("Эта команда доступна только клиентам.")
+        return
+    await show_my_chats(message, user.id)
 
 
 @router.message(Command("admin"))
@@ -317,60 +468,7 @@ async def cb_cancel(callback: CallbackQuery):
     await callback.answer()
 
 
-# ---------------------------------------------------------------- specs
-@router.callback_query(F.data.startswith("spec:"))
-async def cb_spec(callback: CallbackQuery):
-    chat_id = int(callback.data.split(":", 1)[1])
-    chat = await db.get_chat(chat_id)
-    if not chat or chat["status"] != "active":
-        await callback.answer("Чат не активен", show_alert=True)
-        return
-
-    msgs = await db.get_chat_messages(chat_id, limit=200)
-    text = await ai.build_spec(chat, msgs)
-    await callback.message.answer(f"🧠 Собранное ТЗ:\n\n{text}")
-    await callback.answer()
-
-
-# ---------------------------------------------------------------- specs review panel
-@router.callback_query(F.data.startswith("spec_review:"))
-async def cb_spec_review(callback: CallbackQuery):
-    spec_id = int(callback.data.split(":")[1])
-    action = callback.data.split(":")[2]
-    spec = await db.get_spec(spec_id)
-    if not spec:
-        await callback.answer("ТЗ не найдено", show_alert=True)
-        return
-
-    uid = callback.from_user.id
-    if not config.is_admin(uid):
-        await callback.answer("Только админ", show_alert=True)
-        return
-
-    await db.set_spec_status(spec_id, action)
-    preview = (spec["body"][:200] + "…") if len(spec["body"]) > 200 else spec["body"]
-    await callback.message.answer(f"ТЗ #{spec['id']}: {action}.\n\n{preview}")
-    await callback.answer("Статус обновлён")
-
-
-@router.callback_query(F.data.startswith("spec_open:"))
-async def cb_spec_open(callback: CallbackQuery):
-    spec_id = int(callback.data.split(":")[1])
-    spec = await db.get_spec(spec_id)
-    if not spec:
-        await callback.answer("ТЗ не найдено", show_alert=True)
-        return
-
-    # Показываем ТЗ и кнопки принять/отклонить
-    await callback.message.answer(
-        f"📄 ТЗ #{spec['id']}\n\n{spec['body']}\n\n"
-        "Нажми «✅ Принять», чтобы отметить как рецензионованным.",
-        reply_markup=spec_review_kb(spec_id),
-    )
-    await callback.answer()
-
-
-# ---------------------------------------------------------------- close
+@router.callback_query(F.data.startswith("close:"))
 async def cb_close(callback: CallbackQuery):
     chat_id = int(callback.data.split(":", 1)[1])
     chat = await db.get_chat(chat_id)
@@ -447,11 +545,6 @@ async def cb_operator_menu(callback: CallbackQuery):
             "Ты видишь только клиентов своих услуг. Админ видит всё.",
             back_kb("admin:worker" if config.is_admin(uid) else "opmenu:back"),
         )
-    elif action == "back":
-        if config.is_admin(uid):
-            await show_admin_panel(callback.message, edit=True)
-        else:
-            await show_operator_panel(callback.message, edit=True)
     else:
         await show_operator_panel(callback.message, edit=True,
                                   back_to_admin=config.is_admin(uid))
@@ -550,227 +643,7 @@ async def cb_admin(callback: CallbackQuery):
     await callback.answer()
 
 
-# ---------------------------------------------------------------- клиент: мои заказы и меню
-
-@router.callback_query(F.data.startswith("client:"))
-async def cb_client(callback: CallbackQuery):
-    uid = callback.from_user.id
-    action = callback.data.split(":", 1)[1]
-
-    if action == "menu":
-        active = await db.get_active_chat_for_client(uid)
-        if active:
-            await safe_edit(
-                callback.message,
-                (
-                    f"👋 У тебя активный заказ #{active['id']}.\n"
-                    "Напиши сообщение — оно уйдёт специалисту.\n\n"
-                    "Все прошлые заказы и переписка — в «📁 Мои заказы»."
-                ),
-                client_kb(active["id"]),
-            )
-        else:
-            await safe_edit(
-                callback.message,
-                (
-                    "👋 Привет! Я бот студии retr1kze.\n\n"
-                    "Выбери услугу — и я анонимно свяжу тебя со специалистом."
-                ),
-                services_kb(),
-            )
-        await callback.answer()
-        return
-
-    if action == "services":
-        active = await db.get_active_chat_for_client(uid)
-        if active:
-            await safe_edit(
-                callback.message,
-                f"У тебя уже есть активный заказ #{active['id']}. "
-                "Заверши его, чтобы создать новый.",
-                client_kb(active["id"]),
-            )
-        else:
-            await safe_edit(callback.message, "Выбери услугу:", services_kb())
-        await callback.answer()
-        return
-
-    if action == "chats":
-        chats = await db.get_client_chats(uid)
-        text = "📁 <b>Твои заказы</b>\n"
-        if not chats:
-            text += "Пока заказов нет."
-        else:
-            for chat in chats:
-                mark = "🟢" if chat["status"] == "active" else "✅"
-                text += (
-                    f"\n{mark} #{chat['id']} · "
-                    f"{esc(config.service_title(chat['service_key']))} · "
-                    f"{fmt_date(chat['created_at'])}"
-                )
-        await safe_edit(callback.message, text, my_chats_kb(chats))
-        await callback.answer()
-
-
-@router.callback_query(F.data.startswith("history:"))
-async def cb_history(callback: CallbackQuery):
-    chat_id = int(callback.data.split(":", 1)[1])
-    chat = await db.get_chat(chat_id)
-    if not chat or chat["client_id"] != callback.from_user.id:
-        await callback.answer("Заказ не найден", show_alert=True)
-        return
-
-    messages = await db.get_chat_messages(chat_id)
-    lines = [
-        f"📄 <b>Заказ #{chat_id}</b> · {config.service_title(chat['service_key'])} · "
-        f"{chat['status']} · {fmt_date(chat['created_at'])}\n"
-    ]
-    for item in messages:
-        who = "Ты" if item["sender_id"] == callback.from_user.id else "Специалист"
-        body = esc(item["body"] or "")
-        if len(body) > 300:
-            body = body[:297] + "…"
-        lines.append(f"{who}: {body}")
-    await safe_edit(
-        callback.message,
-        "\n".join(lines),
-        history_kb(chat_id, chat["status"] == "active"),
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("reopen:"))
-async def cb_reopen(callback: CallbackQuery):
-    chat_id = int(callback.data.split(":", 1)[1])
-    chat = await db.get_chat(chat_id)
-    uid = callback.from_user.id
-    if not chat or chat["client_id"] != uid:
-        await callback.answer("Заказ не найден", show_alert=True)
-        return
-
-    reopened = await db.reopen_chat(chat_id)
-    if not reopened:
-        await callback.answer("Не удалось возобновить чат", show_alert=True)
-        return
-    await db.log("chat_reopened", uid, chat_id, chat["service_key"])
-    await safe_send(
-        callback.bot,
-        chat["operator_id"],
-        f"🔄 Клиент возобновил чат #{chat_id}. Пришли ответ — дойдёт до клиента.",
-        reply_markup=chat_kb(chat_id, for_operator=True),
-    )
-    await safe_edit(
-        callback.message,
-        f"✅ Чат #{chat_id} возобновлён. Пиши сообщение — оно уйдёт специалисту.",
-    )
-    await callback.answer("Чат возобновлён")
-
-
-# ---------------------------------------------------------------- специалист: сбор ТЗ
-
-@router.callback_query(F.data.startswith("spec:"))
-async def cb_spec(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not config.is_operator(uid):
-        await callback.answer("⛔ Только для специалистов", show_alert=True)
-        return
-
-    chat_id = int(callback.data.split(":", 1)[1])
-    chat = await db.get_chat(chat_id)
-    if not chat or chat["status"] != "active":
-        await callback.answer("Чат не найден или уже закрыт", show_alert=True)
-        return
-    if not (config.is_admin(uid) or chat["operator_id"] == uid):
-        await callback.answer("Это не твой чат ⛔", show_alert=True)
-        return
-    if not config.GEMINI_API_KEY:
-        await callback.answer("Ключ GEMINI_API_KEY не настроен", show_alert=True)
-        return
-
-    messages = await db.get_chat_messages(chat_id)
-    if not messages:
-        await callback.answer("В чате пока нет сообщений", show_alert=True)
-        return
-
-    await callback.answer("Собираю ТЗ…", show_alert=True)
-    try:
-        body = await ai.build_spec(chat, messages)
-    except RuntimeError as exc:
-        await callback.message.answer(f"⚠️ Не удалось собрать ТЗ: {exc}")
-        return
-
-    spec_id = await db.save_spec(chat_id, body)
-    await db.log("spec_created", uid, chat_id, chat["service_key"])
-
-    preview = esc(body)
-    if len(preview) > 250:
-        preview = preview[:247] + "…"
-    await callback.message.answer(
-        f"🧠 <b>ТЗ #{spec_id} для чата #{chat_id}</b> собрано и отправлено на проверку.\n\n{preview}"
-    )
-
-    if not config.is_admin(uid):
-        await safe_send(
-            callback.bot,
-            config.ADMIN_ID,
-            f"📥 Новое ТЗ #{spec_id} от специалиста {uid} · чат #{chat_id}.",
-            reply_markup=spec_review_kb(spec_id),
-        )
-
-
-@router.callback_query(F.data.startswith("spec_open:"))
-async def cb_spec_open(callback: CallbackQuery):
-    if not config.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Только для администратора", show_alert=True)
-        return
-    spec_id = int(callback.data.split(":", 1)[1])
-    spec = await db.get_spec(spec_id)
-    if not spec:
-        await callback.answer("ТЗ не найдено", show_alert=True)
-        return
-    await safe_edit(
-        callback.message,
-        f"📄 <b>ТЗ #{spec_id}</b> · чат #{spec['chat_id']} · {spec['status']}\n\n"
-        f"{spec['body']}",
-        spec_review_kb(spec_id),
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("spec_review:"))
-async def cb_spec_review(callback: CallbackQuery):
-    if not config.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Только для администратора", show_alert=True)
-        return
-    parts = callback.data.split(":")
-    spec_id = int(parts[1])
-    verdict = parts[2]
-    spec = await db.get_spec(spec_id)
-    if not spec:
-        await callback.answer("ТЗ не найдено", show_alert=True)
-        return
-
-    new_status = "approved" if verdict == "approve" else "rejected"
-    await db.set_spec_status(spec_id, new_status)
-    word = "одобрено" if new_status == "approved" else "отклонено"
-
-    chat = await db.get_chat(spec["chat_id"])
-    if chat:
-        await safe_send(
-            callback.bot,
-            chat["operator_id"],
-            f"📄 ТЗ #{spec_id} по чату #{chat['id']} {word}.",
-        )
-
-    await safe_edit(
-        callback.message,
-        f"✅ ТЗ #{spec_id} {word}.",
-        spec_list_kb(await db.get_pending_specs()),
-    )
-    await callback.answer()
-
-
-# ---------------------------------------------------------------- messages
+# ---------------------------------------------------------------- сообщения
 @router.message()
 async def handle_message(message: Message):
     user = message.from_user
@@ -780,7 +653,19 @@ async def handle_message(message: Message):
     await db.register_user(uid, user.username, user.full_name, role)
 
     if text.startswith("/"):
-        await message.answer("Неизвестная команда. Напиши /start, чтобы открыть меню.")
+        # Обработка команд, введенных в поле ввода
+        if text == "/start":
+            await cmd_start(message)
+        elif text == "/help":
+            await cmd_help(message)
+        elif text == "/id":
+            await cmd_id(message)
+        elif text == "/mychats":
+            await cmd_mychats(message)
+        elif text == "/admin":
+            await cmd_admin(message)
+        else:
+            await message.answer("Неизвестная команда. Напиши /start, чтобы открыть меню.")
         return
 
     # отмена режима ответа
@@ -789,7 +674,7 @@ async def handle_message(message: Message):
             await db.clear_pending(uid)
             await message.answer("Отменено.",
                                  reply_markup=operator_kb(back_to_admin=config.is_admin(uid)))
-            return
+        return
 
     # специалист отвечает клиенту
     if config.is_operator(uid):
@@ -797,9 +682,13 @@ async def handle_message(message: Message):
         if pending:
             chat = await db.get_chat(pending)
             if chat and chat["status"] == "active":
+                # Получаем последнее сообщение для контекста
+                messages = await db.get_chat_messages(chat["id"], limit=1)
+                original = messages[0]["body"] if messages else ""
+
                 body = await relay_to(
                     message.bot, message, chat["client_id"],
-                    f"💬 <b>Ответ специалиста (чат #{chat['id']})</b>",
+                    "💬 <b>Ответ специалиста</b>",
                     chat_kb(chat["id"], for_operator=False),
                 )
                 await db.save_message(chat["id"], uid, "op_to_client", body)
@@ -809,24 +698,17 @@ async def handle_message(message: Message):
                 return
             await db.clear_pending(uid)
 
-    # клиент пишет специалисту или отвечает по конкретному чату
+    # клиент пишет специалисту
     active = await db.get_active_chat_for_client(uid)
-    target_chat = active
-    if not target_chat:
-        replied = replied_chat_id(message)
-        if replied:
-            chat = await db.get_chat(replied)
-            if chat and chat["client_id"] == uid and chat["status"] == "active":
-                target_chat = chat
-    if target_chat:
-        title = esc(config.service_title(target_chat["service_key"]))
+    if active:
+        title = esc(config.service_title(active["service_key"]))
         body = await relay_to(
-            message.bot, message, target_chat["operator_id"],
-            f"💬 <b>Клиент #{target_chat['id']} · {title}</b>",
-            chat_kb(target_chat["id"], for_operator=True),
+            message.bot, message, active["operator_id"],
+            f"💬 <b>Клиент #{active['id']} · {title}</b>",
+            chat_kb(active["id"], for_operator=True),
         )
-        await db.save_message(target_chat["id"], uid, "client_to_op", body)
-        await db.log("client_message", uid, target_chat["id"], target_chat["service_key"])
+        await db.save_message(active["id"], uid, "client_to_op", body)
+        await db.log("client_message", uid, active["id"], active["service_key"])
         await message.answer("✅ Сообщение отправлено специалисту.")
         return
 
@@ -876,19 +758,19 @@ def run_webhook() -> None:
     bot, dispatcher = build_bot()
     webhook_url = f"{config.WEBHOOK_BASE}{config.WEBHOOK_PATH}"
 
-    async def on_startup(bot: Bot) -> None:
+    async def on_startup(startup_bot: Bot) -> None:
         await db.init_db()
         # Не дропаем pending: если Free-сервис Render спал, Telegram
         # успел накопить сообщения — они должны дойти после просыпания.
-        await bot.set_webhook(
+        await startup_bot.set_webhook(
             webhook_url,
             secret_token=config.WEBHOOK_SECRET,
             drop_pending_updates=False,
         )
         print(f"✅ Webhook: {webhook_url}", flush=True)
 
-    async def on_shutdown(bot: Bot) -> None:
-        await bot.session.close()
+    async def on_shutdown(shutdown_bot: Bot) -> None:
+        await shutdown_bot.session.close()
 
     dispatcher.startup.register(on_startup)
     dispatcher.shutdown.register(on_shutdown)
