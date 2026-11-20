@@ -6,7 +6,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -106,6 +106,14 @@ async def safe_edit(target: Message, text: str, markup=None) -> None:
         await target.edit_text(text[:4096], reply_markup=markup)
     except TelegramBadRequest:
         await target.answer(text[:4096], reply_markup=markup)
+
+
+async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> None:
+    """Уведомление не должно ронять весь webhook, если адресат заблокировал бота."""
+    try:
+        await bot.send_message(chat_id, text, **kwargs)
+    except TelegramAPIError as exc:
+        print(f"⚠️ Не удалось уведомить {chat_id}: {exc}", flush=True)
 
 
 def fmt_date(iso: str) -> str:
@@ -228,7 +236,8 @@ async def cb_service(callback: CallbackQuery):
         chat_kb(chat_id, for_operator=False),
     )
 
-    await callback.bot.send_message(
+    await safe_send(
+        callback.bot,
         operator_id,
         f"🆕 <b>Новый чат #{chat_id}</b>\n"
         f"Услуга: {html.escape(service['title'])}\n"
@@ -237,7 +246,8 @@ async def cb_service(callback: CallbackQuery):
         reply_markup=chat_kb(chat_id, for_operator=True),
     )
     if operator_id != config.ADMIN_ID:
-        await callback.bot.send_message(
+        await safe_send(
+            callback.bot,
             config.ADMIN_ID,
             f"📥 Новый клиент у специалиста {operator_id}: "
             f"{html.escape(service['title'])} · чат #{chat_id}\n"
@@ -299,10 +309,7 @@ async def cb_close(callback: CallbackQuery):
         (chat["operator_id"], f"🔚 Чат #{chat_id} завершён."),
     ):
         if target_id != uid:
-            try:
-                await callback.bot.send_message(target_id, text)
-            except TelegramBadRequest:
-                pass
+            await safe_send(callback.bot, target_id, text)
 
     await db.log("chat_closed", uid, chat_id, chat["service_key"])
     await safe_edit(callback.message, f"✅ Чат #{chat_id} завершён.")
