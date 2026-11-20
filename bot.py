@@ -31,41 +31,7 @@ from keyboards import (
     spec_review_kb,
 )
 
-# Словарь команд для разных ролей
-COMMANDS_BY_ROLE = {
-    "admin": [
-        ("admin", "👑 Админ-панель"),
-        ("/id", "🆔 Мой ID"),
-        ("/start", "🔙 Начало"),
-        ("/help", "ℹ️ Помощь"),
-    ],
-    "operator": [
-        ("/mychats", "📁 Мои заказы"),
-        ("/start", "🔙 Начало"),
-        ("/help", "ℹ️ Помощь"),
-    ],
-    "client": [
-        ("/mychats", "📁 Мои заказы"),
-        ("/start", "🔙 Начало"),
-        ("/help", "ℹ️ Помощь"),
-    ],
-}
-
-
 router = Router()
-
-
-async def set_bot_commands(user_id: int, bot: Bot) -> None:
-    """Устанавливает команды, которые появляются при вводе /."""
-    role = config.role_for(user_id)
-    commands = COMMANDS_BY_ROLE.get(role, COMMANDS_BY_ROLE["client"])
-    try:
-        await bot.set_my_commands(
-            commands,
-            language_code="en",
-        )
-    except Exception:
-        pass  # Не критично
 
 
 # ---------------------------------------------------------------- utils
@@ -181,6 +147,35 @@ def replied_chat_id(message: Message) -> int | None:
     return int(match.group(1)) if match else None
 
 
+# ---------------------------------------------------------------- commands setup
+def set_bot_commands(user_id: int, bot: Bot) -> None:
+    """Устанавливаем команды бота, которые появляются при вводе /."""
+    role = config.role_for(user_id)
+    commands = {
+        "admin": [
+            ("admin", "👑 Админ-панель"),
+            ("/id", "🆔 Мой ID"),
+            ("/start", "🔙 Начало"),
+            ("/help", "ℹ️ Помощь"),
+        ],
+        "operator": [
+            ("/mychats", "📁 Мои заказы"),
+            ("/start", "🔙 Начало"),
+            ("/help", "ℹ️ Помощь"),
+        ],
+        "client": [
+            ("/mychats", "📁 Мои заказы"),
+            ("/start", "🔙 Начало"),
+            ("/help", "ℹ️ Помощь"),
+    ]
+    }
+    cmds = commands.get(role, commands["client"])
+    try:
+        asyncio.create_task(bot.set_my_commands(cmds, language_code="en"))
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------- panels
 
 async def show_services(target: Message, client_id: int) -> None:
@@ -242,7 +237,7 @@ async def show_my_chats(target: Message, user_id: int) -> None:
             mark = "🟢" if chat["status"] == "active" else "✅"
             text += (
                 f"\n{mark} #{chat['id']} · "
-                f"{esc(config.service_title(chat['service_key']))} · "
+                f"{config.service_title(chat['service_key'])} · "
                 f"{fmt_date(chat['created_at'])}"
             )
     await target.answer(text, reply_markup=my_chats_kb(chats))
@@ -281,20 +276,8 @@ async def cmd_start(message: Message):
     await db.register_user(user.id, user.username, user.full_name, role)
     await db.log("start", user.id)
 
-    # Устанавливаем команды бота, чтобы они появлялись при вводе /
-    try:
-        commands = []
-        if config.is_admin(user.id):
-            commands.extend([("admin", "👑 Админ-панель"), ("/id", "🆔 Мой ID")])
-        if config.is_operator(user.id) and not config.is_admin(user.id):
-            commands.append(("/mychats", "📁 Мои заказы"))
-        commands.extend([("/start", "🔙 Начало"), ("/help", "ℹ️ Помощь")])
-        await Bot(config.BOT_TOKEN).set_my_commands(
-            commands,
-            language_code=user.language_code or "en",
-        )
-    except Exception:
-        pass  # Не критично, если не получится установить команды
+    # Устанавливаем команды бота
+    asyncio.create_task(set_bot_commands(user.id, Bot(config.BOT_TOKEN)))
 
     if role == "admin":
         await show_admin_panel(message)
@@ -319,7 +302,12 @@ async def cmd_help(message: Message):
             "Чтобы добавить друга: узнай его ID командой /id и укажи в SERVICES_JSON.\n\n"
             "Команды при вводе /:\n"
         )
-        for cmd, desc in config.get_my_commands(user.id):
+        for cmd, desc in [
+            ("admin", "👑 Админ-панель"),
+            ("/id", "🆔 Мой ID"),
+            ("/start", "🔙 Начало"),
+            ("/help", "ℹ️ Помощь"),
+        ]:
             text += f"• {cmd} — {desc}\n"
         await message.answer(text, parse_mode="HTML")
     elif role == "operator":
@@ -332,7 +320,11 @@ async def cmd_help(message: Message):
             "Ты видишь только клиентов своих услуг. Админ видит всё.\n\n"
             "Команды при вводе /:\n"
         )
-        for cmd, desc in config.get_my_commands(user.id):
+        for cmd, desc in [
+            ("/mychats", "📁 Мои заказы"),
+            ("/start", "🔙 Начало"),
+            ("/help", "ℹ️ Помощь"),
+        ]:
             text += f"• {cmd} — {desc}\n"
         await message.answer(text, parse_mode="HTML")
     else:
@@ -345,7 +337,11 @@ async def cmd_help(message: Message):
             "5. Чтобы завершить чат: нажми «🔚 Завершить»\n\n"
             "Команды при вводе /:\n"
         )
-        for cmd, desc in config.get_my_commands(user.id):
+        for cmd, desc in [
+            ("/mychats", "📁 Мои заказы"),
+            ("/start", "🔙 Начало"),
+            ("/help", "ℹ️ Помощь"),
+        ]:
             text += f"• {cmd} — {desc}\n"
         await message.answer(text, parse_mode="HTML")
 
@@ -520,7 +516,7 @@ async def cb_operator_menu(callback: CallbackQuery):
             lines = ["💬 <b>Мои активные чаты</b>\n"]
             for chat in chats:
                 lines.append(
-                    f"• #{chat['id']} · {esc(config.service_title(chat['service_key']))} "
+                    f"• #{chat['id']} · {config.service_title(chat['service_key'])} "
                     f"· клиент {chat['client_id']} · {fmt_date(chat['created_at'])}"
                 )
             await safe_edit(callback.message, "\n".join(lines), chat_list_kb(chats))
@@ -589,7 +585,7 @@ async def cb_admin(callback: CallbackQuery):
             "<b>По услугам:</b>",
         ]
         for row in stats["services"]:
-            lines.append(f"• {esc(config.service_title(row['service_key']))} — {row['cnt']}")
+            lines.append(f"• {config.service_title(row['service_key'])} — {row['cnt']}")
         if not stats["services"]:
             lines.append("• пока нет")
         lines += ["", "<b>По специалистам:</b>"]
@@ -625,7 +621,7 @@ async def cb_admin(callback: CallbackQuery):
             lines = ["💬 <b>Активные чаты</b>\n"]
             for chat in chats:
                 lines.append(
-                    f"• #{chat['id']} · {esc(config.service_title(chat['service_key']))} "
+                    f"• #{chat['id']} · {config.service_title(chat['service_key'])} "
                     f"· 👉 {config.operator_name(chat['operator_id'])}"
                 )
             await safe_edit(callback.message, "\n".join(lines), chat_list_kb(chats))
@@ -633,7 +629,7 @@ async def cb_admin(callback: CallbackQuery):
         lines = ["📋 <b>Услуги и исполнители</b>\n"]
         for key, item in config.SERVICES.items():
             target = config.operator_for(key)
-            lines.append(f"• {esc(item['title'])} → {config.operator_name(target)}")
+            lines.append(f"• {config.service_title(item['title'])} → {config.operator_name(target)}")
         if not config.SERVICES:
             lines.append("Услуги не настроены.")
         await safe_edit(callback.message, "\n".join(lines), back_kb())
@@ -701,7 +697,7 @@ async def handle_message(message: Message):
     # клиент пишет специалисту
     active = await db.get_active_chat_for_client(uid)
     if active:
-        title = esc(config.service_title(active["service_key"]))
+        title = config.service_title(active["service_key"])
         body = await relay_to(
             message.bot, message, active["operator_id"],
             f"💬 <b>Клиент #{active['id']} · {title}</b>",
@@ -732,7 +728,7 @@ def validate_config() -> None:
 
 
 def build_bot() -> tuple[Bot, Dispatcher]:
-    """Создаём объекты синхронно: aiohttp-сессия Bot ленивая и привяжется
+    """Создаём объекты синхронно: aiohttp-сессия Bot ленивая и привяжене
     к тому event loop, в котором реально запустится приложение."""
     validate_config()
     bot = Bot(config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -760,6 +756,8 @@ def run_webhook() -> None:
 
     async def on_startup(startup_bot: Bot) -> None:
         await db.init_db()
+        # Устанавливаем команды при старте вебхука
+        asyncio.create_task(set_bot_commands(config.ADMIN_ID, startup_bot))
         # Не дропаем pending: если Free-сервис Render спал, Telegram
         # успел накопить сообщения — они должны дойти после просыпания.
         await startup_bot.set_webhook(
