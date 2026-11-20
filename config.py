@@ -13,6 +13,15 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
 DB_PATH = os.getenv("DB_PATH", "data/bot.db")
 PORT = int(os.getenv("PORT", "8080"))
 
+# Внешняя БД Turso: если задана — используется вместо локального SQLite.
+# Это нужно, чтобы история чатов и статистика не терялись при рестарте Render.
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+
+# Бесплатный Gemini API для автоматического сбора ТЗ из переписки.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+
 # Telegram разрешает в secret token только A-Za-z0-9_- (до 256 символов).
 # Render генерирует случайную строку с любыми символами — нормализуем её.
 _raw_secret = os.getenv("WEBHOOK_SECRET", "").strip()
