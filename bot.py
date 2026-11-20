@@ -294,10 +294,15 @@ async def cb_reply(callback: CallbackQuery):
         await callback.answer("Это не твой чат ⛔", show_alert=True)
         return
 
+    # Получаем последнее сообщение из чата, чтобы показать контекст
+    messages = await db.get_chat_messages(chat_id, limit=1)
+    last_msg = messages[0]["body"] if messages else ""
+
     await db.set_pending(uid, chat_id)
     await safe_edit(
         callback.message,
-        f"✍️ Введи ответ для клиента (чат #{chat_id}).\n"
+        f"✍️ Введи ответ для клиента (чат #{chat_id}).\n\n"
+        f"💬 Откликаешься на: {last_msg}\n\n"
         "Можно отправить текст, фото, файл или голосовое.",
         cancel_kb(chat_id),
     )
