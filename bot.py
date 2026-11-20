@@ -312,7 +312,60 @@ async def cb_cancel(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("close:"))
+# ---------------------------------------------------------------- specs
+@router.callback_query(F.data.startswith("spec:"))
+async def cb_spec(callback: CallbackQuery):
+    chat_id = int(callback.data.split(":", 1)[1])
+    chat = await db.get_chat(chat_id)
+    if not chat or chat["status"] != "active":
+        await callback.answer("Чат не активен", show_alert=True)
+        return
+
+    msgs = await db.get_chat_messages(chat_id, limit=200)
+    text = await ai.build_spec(chat, msgs)
+    await callback.message.answer(f"🧠 Собранное ТЗ:\n\n{text}")
+    await callback.answer()
+
+
+# ---------------------------------------------------------------- specs review panel
+@router.callback_query(F.data.startswith("spec_review:"))
+async def cb_spec_review(callback: CallbackQuery):
+    spec_id = int(callback.data.split(":")[1])
+    action = callback.data.split(":")[2]
+    spec = await db.get_spec(spec_id)
+    if not spec:
+        await callback.answer("ТЗ не найдено", show_alert=True)
+        return
+
+    uid = callback.from_user.id
+    if not config.is_admin(uid):
+        await callback.answer("Только админ", show_alert=True)
+        return
+
+    await db.set_spec_status(spec_id, action)
+    preview = (spec["body"][:200] + "…") if len(spec["body"]) > 200 else spec["body"]
+    await callback.message.answer(f"ТЗ #{spec['id']}: {action}.\n\n{preview}")
+    await callback.answer("Статус обновлён")
+
+
+@router.callback_query(F.data.startswith("spec_open:"))
+async def cb_spec_open(callback: CallbackQuery):
+    spec_id = int(callback.data.split(":")[1])
+    spec = await db.get_spec(spec_id)
+    if not spec:
+        await callback.answer("ТЗ не найдено", show_alert=True)
+        return
+
+    # Показываем ТЗ и кнопки принять/отклонить
+    await callback.message.answer(
+        f"📄 ТЗ #{spec['id']}\n\n{spec['body']}\n\n"
+        "Нажми «✅ Принять», чтобы отметить как рецензионованным.",
+        reply_markup=spec_review_kb(spec_id),
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------- close
 async def cb_close(callback: CallbackQuery):
     chat_id = int(callback.data.split(":", 1)[1])
     chat = await db.get_chat(chat_id)
