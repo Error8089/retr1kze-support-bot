@@ -1,0 +1,9 @@
+# Секреты НЕ должны попадать в Docker-образ
+.env
+data/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+README.md
