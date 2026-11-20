@@ -508,7 +508,7 @@ async def handle_message(message: Message):
 
 
 # ---------------------------------------------------------------- entrypoint
-async def main() -> None:
+def validate_config() -> None:
     if not config.BOT_TOKEN:
         raise SystemExit("❌ Не задан BOT_TOKEN. Скопируй .env.example в .env и заполни его.")
     if not config.ADMIN_ID:
@@ -516,39 +516,62 @@ async def main() -> None:
     if not config.SERVICES:
         raise SystemExit("❌ Не настроены услуги (SERVICES_JSON).")
 
-    await db.init_db()
 
+def build_bot() -> tuple[Bot, Dispatcher]:
+    """Создаём объекты синхронно: aiohttp-сессия Bot ленивая и привяжется
+    к тому event loop, в котором реально запустится приложение."""
+    validate_config()
     bot = Bot(config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
+    return bot, dispatcher
 
-    if config.WEBHOOK_BASE:
-        webhook_url = f"{config.WEBHOOK_BASE}{config.WEBHOOK_PATH}"
 
-        async def on_startup(bot: Bot) -> None:
-            # Не дропаем pending: если Free-сервис Render спал, Telegram
-            # успел накопить сообщения — они должны дойти после просыпания.
-            await bot.set_webhook(
-                webhook_url,
-                secret_token=config.WEBHOOK_SECRET,
-                drop_pending_updates=False,
-            )
-            print(f"✅ Webhook: {webhook_url}")
-
-        dispatcher.startup.register(on_startup)
-
-        application = web.Application()
-        application.router.add_get("/", lambda request: web.Response(text="bot is alive"))
-        SimpleRequestHandler(
-            dispatcher=dispatcher, bot=bot, secret_token=config.WEBHOOK_SECRET
-        ).register(application, path=config.WEBHOOK_PATH)
-        setup_application(application, dispatcher, bot=bot)
-        web.run_app(application, host="0.0.0.0", port=config.PORT)
-    else:
-        await bot.delete_webhook(drop_pending_updates=True)
-        print("✅ Режим polling (локальный тест)")
+async def run_polling() -> None:
+    bot, dispatcher = build_bot()
+    await db.init_db()
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("✅ Режим polling (локальный тест)")
+    try:
         await dispatcher.start_polling(bot)
+    finally:
+        await bot.session.close()
+
+
+def run_webhook() -> None:
+    """web.run_app() сам создаёт event loop, поэтому эту функцию НЕЛЬЗЯ
+    вызывать из asyncio.run() — иначе объекты окажутся в разных loop'ах."""
+    bot, dispatcher = build_bot()
+    webhook_url = f"{config.WEBHOOK_BASE}{config.WEBHOOK_PATH}"
+
+    async def on_startup(bot: Bot) -> None:
+        await db.init_db()
+        # Не дропаем pending: если Free-сервис Render спал, Telegram
+        # успел накопить сообщения — они должны дойти после просыпания.
+        await bot.set_webhook(
+            webhook_url,
+            secret_token=config.WEBHOOK_SECRET,
+            drop_pending_updates=False,
+        )
+        print(f"✅ Webhook: {webhook_url}", flush=True)
+
+    async def on_shutdown(bot: Bot) -> None:
+        await bot.session.close()
+
+    dispatcher.startup.register(on_startup)
+    dispatcher.shutdown.register(on_shutdown)
+
+    application = web.Application()
+    application.router.add_get("/", lambda request: web.Response(text="bot is alive"))
+    SimpleRequestHandler(
+        dispatcher=dispatcher, bot=bot, secret_token=config.WEBHOOK_SECRET
+    ).register(application, path=config.WEBHOOK_PATH)
+    setup_application(application, dispatcher, bot=bot)
+    web.run_app(application, host="0.0.0.0", port=config.PORT)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if config.WEBHOOK_BASE:
+        run_webhook()
+    else:
+        asyncio.run(run_polling())
