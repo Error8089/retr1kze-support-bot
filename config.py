@@ -1,6 +1,8 @@
 """Конфигурация бота. Все секреты — через переменные окружения / .env."""
 import json
 import os
+import re
+import secrets
 
 from dotenv import load_dotenv
 
@@ -11,7 +13,12 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
 DB_PATH = os.getenv("DB_PATH", "data/bot.db")
 PORT = int(os.getenv("PORT", "8080"))
 
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change-me")
+# Telegram разрешает в secret token только A-Za-z0-9_- (до 256 символов).
+# Render генерирует случайную строку с любыми символами — нормализуем её.
+_raw_secret = os.getenv("WEBHOOK_SECRET", "").strip()
+WEBHOOK_SECRET = re.sub(r"[^A-Za-z0-9_-]", "", _raw_secret)[:256]
+if len(WEBHOOK_SECRET) < 16:
+    WEBHOOK_SECRET = secrets.token_urlsafe(32)
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_BASE = (
     os.getenv("WEBHOOK_URL")
