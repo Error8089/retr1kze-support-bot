@@ -35,8 +35,8 @@ router = Router()
 
 
 # ---------------------------------------------------------------- utils
-def esc(value) -> str:
-    """Экранируем только &, <, > — Telegram не любит числовые entity вроде '."""
+def esc(value: str) -> str:
+    """Экранируем только &, <, > — Telegram не любит числовые entity."""
     return (
         str(value)
         .replace("&", "&")
@@ -138,20 +138,9 @@ def fmt_date(iso: str) -> str:
     return iso[:10] if iso else "—"
 
 
-def replied_chat_id(message: Message) -> int | None:
-    """Номер чата из сообщения, на которое пользователь ответил в Telegram."""
-    reply = message.reply_to_message
-    if not reply:
-        return None
-    match = re.search(r"#(\d+)", reply.text or reply.caption or "")
-    return int(match.group(1)) if match else None
-
-
-# ---------------------------------------------------------------- commands setup
-def set_bot_commands(user_id: int, bot: Bot) -> None:
-    """Устанавливаем команды бота, которые появляются при вводе /."""
-    role = config.role_for(user_id)
-    commands = {
+def get_my_commands(role: str) -> list:
+    """Возвращает список команд для роли пользователя."""
+    cmds = {
         "admin": [
             ("admin", "👑 Админ-панель"),
             ("/id", "🆔 Мой ID"),
@@ -167,13 +156,9 @@ def set_bot_commands(user_id: int, bot: Bot) -> None:
             ("/mychats", "📁 Мои заказы"),
             ("/start", "🔙 Начало"),
             ("/help", "ℹ️ Помощь"),
-    ]
+        ],
     }
-    cmds = commands.get(role, commands["client"])
-    try:
-        asyncio.create_task(bot.set_my_commands(cmds, language_code="en"))
-    except Exception:
-        pass
+    return cmds.get(role, cmds["client"])
 
 
 # ---------------------------------------------------------------- panels
@@ -276,8 +261,14 @@ async def cmd_start(message: Message):
     await db.register_user(user.id, user.username, user.full_name, role)
     await db.log("start", user.id)
 
-    # Устанавливаем команды бота
-    asyncio.create_task(set_bot_commands(user.id, Bot(config.BOT_TOKEN)))
+    # Устанавливаем команды бота (появляются при вводе /)
+    try:
+        bot = Bot(config.BOT_TOKEN)
+        role = config.role_for(user.id)
+        cmds = get_my_commands(role)
+        await bot.set_my_commands(cmds, language_code="en")
+    except Exception:
+        pass  # Не критично, если не получится
 
     if role == "admin":
         await show_admin_panel(message)
@@ -756,8 +747,6 @@ def run_webhook() -> None:
 
     async def on_startup(startup_bot: Bot) -> None:
         await db.init_db()
-        # Устанавливаем команды при старте вебхука
-        asyncio.create_task(set_bot_commands(config.ADMIN_ID, startup_bot))
         # Не дропаем pending: если Free-сервис Render спал, Telegram
         # успел накопить сообщения — они должны дойти после просыпания.
         await startup_bot.set_webhook(
