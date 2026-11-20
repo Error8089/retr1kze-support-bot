@@ -207,6 +207,7 @@ async def get_operator_stats(operator_id: int) -> dict:
 async def get_stats() -> dict:
     day = today()
     async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
         async def scalar(sql: str, params=()) -> int:
             cursor = await db.execute(sql, params)
             row = await cursor.fetchone()

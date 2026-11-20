@@ -1,6 +1,5 @@
 """Telegram-бот для работы с клиентами: анонимный чат, услуги, админ-панель."""
 import asyncio
-import html
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
@@ -27,12 +26,22 @@ router = Router()
 
 
 # ---------------------------------------------------------------- utils
+def esc(value) -> str:
+    """Экранируем только &, <, > — Telegram не любит числовые entity вроде &#x27;."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def user_label(user) -> str:
     parts = []
     if user.full_name:
-        parts.append(html.escape(user.full_name))
+        parts.append(esc(user.full_name))
     if user.username:
-        parts.append(f"@{html.escape(user.username)}")
+        parts.append(f"@{esc(user.username)}")
     return " ".join(parts) or f"ID {user.id}"
 
 
@@ -61,7 +70,7 @@ async def relay_to(bot: Bot, message: Message, target_id: int,
     """Пересылаем сообщение, не раскрывая реальный аккаунт отправителя."""
     raw = (message.text or message.caption or "").strip()
     body = raw or media_label(message)
-    prefix = f"{caption}\n\n{html.escape(raw)}" if raw else caption
+    prefix = f"{caption}\n\n{esc(raw)}" if raw else caption
     if len(prefix) > 1000:
         prefix = prefix[:997] + "…"
 
@@ -230,7 +239,7 @@ async def cb_service(callback: CallbackQuery):
 
     await safe_edit(
         callback.message,
-        f"✅ Ты выбрал: <b>{html.escape(service['title'])}</b>\n\n"
+        f"✅ Ты выбрал: <b>{esc(service['title'])}</b>\n\n"
         "Напиши задачу — специалист получит её и ответит сюда. "
         "Твой Telegram ему не виден.",
         chat_kb(chat_id, for_operator=False),
@@ -240,7 +249,7 @@ async def cb_service(callback: CallbackQuery):
         callback.bot,
         operator_id,
         f"🆕 <b>Новый чат #{chat_id}</b>\n"
-        f"Услуга: {html.escape(service['title'])}\n"
+        f"Услуга: {esc(service['title'])}\n"
         f"Клиент: анонимно (чат #{chat_id})\n\n"
         "Нажми «Ответить», чтобы написать ему.",
         reply_markup=chat_kb(chat_id, for_operator=True),
@@ -250,7 +259,7 @@ async def cb_service(callback: CallbackQuery):
             callback.bot,
             config.ADMIN_ID,
             f"📥 Новый клиент у специалиста {operator_id}: "
-            f"{html.escape(service['title'])} · чат #{chat_id}\n"
+            f"{esc(service['title'])} · чат #{chat_id}\n"
             f"Клиент: {user_label(user)} (ID {user.id})",
         )
     await callback.answer("Специалист уведомлён")
@@ -338,7 +347,7 @@ async def cb_operator_menu(callback: CallbackQuery):
             lines = ["💬 <b>Мои активные чаты</b>\n"]
             for chat in chats:
                 lines.append(
-                    f"• #{chat['id']} · {html.escape(config.service_title(chat['service_key']))} "
+                    f"• #{chat['id']} · {esc(config.service_title(chat['service_key']))} "
                     f"· клиент {chat['client_id']} · {fmt_date(chat['created_at'])}"
                 )
             await safe_edit(callback.message, "\n".join(lines), chat_list_kb(chats))
@@ -407,7 +416,7 @@ async def cb_admin(callback: CallbackQuery):
             "<b>По услугам:</b>",
         ]
         for row in stats["services"]:
-            lines.append(f"• {html.escape(config.service_title(row['service_key']))} — {row['cnt']}")
+            lines.append(f"• {esc(config.service_title(row['service_key']))} — {row['cnt']}")
         if not stats["services"]:
             lines.append("• пока нет")
         lines += ["", "<b>По специалистам:</b>"]
@@ -420,8 +429,8 @@ async def cb_admin(callback: CallbackQuery):
         stats = await db.get_stats()
         lines = ["👥 <b>Последние клиенты</b>\n"]
         for row in stats["recent_clients"]:
-            name = html.escape(row["full_name"] or row["username"] or "без имени")
-            service = html.escape(config.service_title(row["last_service"])) if row["last_service"] else "—"
+            name = esc(row["full_name"] or row["username"] or "без имени")
+            service = esc(config.service_title(row["last_service"])) if row["last_service"] else "—"
             lines.append(f"• <code>{row['id']}</code> {name} · {service} · {fmt_date(row['created_at'])}")
         if len(lines) == 1:
             lines.append("Пока нет клиентов.")
@@ -434,7 +443,7 @@ async def cb_admin(callback: CallbackQuery):
             lines = ["💬 <b>Активные чаты</b>\n"]
             for chat in chats:
                 lines.append(
-                    f"• #{chat['id']} · {html.escape(config.service_title(chat['service_key']))} "
+                    f"• #{chat['id']} · {esc(config.service_title(chat['service_key']))} "
                     f"· 👉 {config.operator_name(chat['operator_id'])}"
                 )
             await safe_edit(callback.message, "\n".join(lines), chat_list_kb(chats))
@@ -442,7 +451,7 @@ async def cb_admin(callback: CallbackQuery):
         lines = ["📋 <b>Услуги и исполнители</b>\n"]
         for key, item in config.SERVICES.items():
             target = config.operator_for(key)
-            lines.append(f"• {html.escape(item['title'])} → {config.operator_name(target)}")
+            lines.append(f"• {esc(item['title'])} → {config.operator_name(target)}")
         if not config.SERVICES:
             lines.append("Услуги не настроены.")
         await safe_edit(callback.message, "\n".join(lines), back_kb())
@@ -494,7 +503,7 @@ async def handle_message(message: Message):
     # клиент пишет специалисту
     active = await db.get_active_chat_for_client(uid)
     if active:
-        title = html.escape(config.service_title(active["service_key"]))
+        title = esc(config.service_title(active["service_key"]))
         body = await relay_to(
             message.bot, message, active["operator_id"],
             f"💬 <b>Клиент #{active['id']} · {title}</b>",
