@@ -96,7 +96,7 @@ git push -u origin main
 2. Выбери созданный репозиторий. Render прочитает `render.yaml`.
 3. В форме заполни `sync: false` переменные:
    - `BOT_TOKEN` — токен от BotFather
-   - `ADMIN_ID` — `5989292547`
+   - `ADMIN_ID` — свой айди
    - `SERVICES_JSON` — тот же JSON, что в `.env`, одной строкой
 4. Plan: **Free**, Region: **Frankfurt**. **Create Web Service**.
 5. Через пару минут в логах появится `✅ Webhook: https://retr1kze-support-bot.onrender.com/webhook` — значит вебхук подключён.
@@ -133,7 +133,7 @@ git push -u origin main
 
 ### Шаги
 
-Всё делается в терминале; браузер нужен только для логина — Firefox подходит.
+Всё делается в терминале; браузер нужен только для логина!
 
 ```bash
 # 1. Установи flyctl (одна команда):
@@ -152,7 +152,7 @@ fly apps create retr1kze-support-bot
 fly volumes create bot_data --region fra --size 1
 
 # 6. Запиши секреты (токен НИГДЕ не публикуй)
-fly secrets set BOT_TOKEN="токен-от-BotFather" ADMIN_ID="5989292547"
+fly secrets set BOT_TOKEN="токен-от-BotFather" ADMIN_ID="свой айди"
 fly secrets set SERVICES_JSON='[{"key":"site","title":"🌐 Разработка сайта","operator_id":0},{"key":"bot","title":"🤖 Telegram-бот","operator_id":0},{"key":"design","title":"🎨 Дизайн и вёрстка","operator_id":0}]'
 fly secrets set WEBHOOK_SECRET="любая-случайная-строка" WEBHOOK_URL="https://retr1kze-support-bot.fly.dev"
 
@@ -210,4 +210,4 @@ telegram-bot/
 - Специалист не может ответить в чужом чате — проверяется `operator_id`
 - Клиент не видит реальных аккаунтов исполнителей: всё идёт через бота
 
-Если нужно добавить, например, рассылку, оплату или сохранение переписки в Google Sheets — скажи, допишу.
+Хорошего дня!
